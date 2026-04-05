@@ -19,11 +19,16 @@ interface PooledConnection {
   inUse: boolean;
 }
 
+interface QueuedWaiter {
+  resolve: (conn: PooledConnection) => void;
+  reject: (err: Error) => void;
+}
+
 export class ConnectionPool extends EventEmitter {
   private readonly dbPath: string;
   private readonly opts: PoolOptions;
   private connections: PooledConnection[] = [];
-  private waitQueue: Array<(conn: PooledConnection) => void> = [];
+  private waitQueue: QueuedWaiter[] = [];
   private closed = false;
   private sweepInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -64,11 +69,12 @@ export class ConnectionPool extends EventEmitter {
     }
 
     // Wait for one to become available
-    return new Promise<Database.Database>((resolve) => {
-      this.waitQueue.push((conn) => {
-        conn.inUse = true;
-        conn.lastUsed = Date.now();
-        resolve(conn.db);
+    return new Promise<Database.Database>((resolve, reject) => {
+      this.waitQueue.push({
+        resolve: (conn) => {
+          resolve(conn.db);
+        },
+        reject,
       });
     });
   }
@@ -77,26 +83,28 @@ export class ConnectionPool extends EventEmitter {
     const conn = this.connections.find((c) => c.db === db);
     if (!conn) return;
 
-    conn.inUse = false;
-    conn.lastUsed = Date.now();
-
-    // Serve any waiting callers
+    // Serve any waiting callers first — mark in-use BEFORE handing off
     if (this.waitQueue.length > 0) {
-      const next = this.waitQueue.shift()!;
-      next(conn);
+      const waiter = this.waitQueue.shift()!;
+      conn.inUse = true;
+      conn.lastUsed = Date.now();
+      waiter.resolve(conn);
+    } else {
+      conn.inUse = false;
+      conn.lastUsed = Date.now();
     }
   }
 
   private sweepIdle(): void {
     const now = Date.now();
-    // Keep at least one connection alive
-    this.connections = this.connections.filter((conn, i) => {
+    let keptOne = false;
+    this.connections = this.connections.filter((conn) => {
       if (conn.inUse) return true;
-      if (i === 0) return true; // keep at least one
-      if (now - conn.lastUsed > this.opts.idleTimeoutMs) {
+      if (now - conn.lastUsed > this.opts.idleTimeoutMs && keptOne) {
         conn.db.close();
         return false;
       }
+      keptOne = true;
       return true;
     });
   }
@@ -115,10 +123,15 @@ export class ConnectionPool extends EventEmitter {
       clearInterval(this.sweepInterval);
       this.sweepInterval = null;
     }
+    // Reject all waiting acquire() callers so they don't hang forever
+    const closeError = new Error("Pool is closed");
+    for (const waiter of this.waitQueue) {
+      waiter.reject(closeError);
+    }
+    this.waitQueue = [];
     for (const conn of this.connections) {
       conn.db.close();
     }
     this.connections = [];
-    this.waitQueue = [];
   }
 }

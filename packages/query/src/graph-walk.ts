@@ -124,8 +124,8 @@ export class GraphWalk {
     let siblings: GraphNode[] = [];
     if (node.communityId !== undefined) {
       const siblingRows = await this.store.query<{ id: string }>(
-        "SELECT id FROM nodes WHERE community_id = ? AND id != ? LIMIT 20",
-        { 1: node.communityId, 2: nodeId } as unknown as Record<string, unknown>
+        "SELECT id FROM nodes WHERE community_id = @communityId AND id != @nodeId LIMIT 20",
+        { communityId: node.communityId, nodeId }
       );
       siblings = await resolveNodes(siblingRows.map((r) => r.id));
     }
@@ -161,31 +161,39 @@ export class GraphWalk {
     startNodeId: string,
     opts?: { maxDepth?: number; edgeKinds?: EdgeKind[] }
   ): Promise<FlowStep[]> {
-    const maxDepth = opts?.maxDepth ?? 10;
+    const maxDepth = Math.min(opts?.maxDepth ?? 10, 50);
     const edgeKinds = opts?.edgeKinds ?? ["calls"];
     const visited = new Set<string>();
     const steps: FlowStep[] = [];
 
-    const dfs = async (nodeId: string, depth: number, inEdge: GraphEdge | null): Promise<void> => {
-      if (visited.has(nodeId) || depth > maxDepth) return;
+    // Iterative DFS using an explicit stack to avoid call stack overflow
+    const stack: Array<{ nodeId: string; depth: number; edge: GraphEdge | null }> = [
+      { nodeId: startNodeId, depth: 0, edge: null },
+    ];
+
+    while (stack.length > 0) {
+      const { nodeId, depth, edge } = stack.pop()!;
+      if (visited.has(nodeId) || depth > maxDepth) continue;
       visited.add(nodeId);
 
       const node = await this.store.getNode(nodeId);
-      if (!node) return;
+      if (!node) continue;
 
-      steps.push({ node, edge: inEdge, depth });
+      steps.push({ node, edge, depth });
 
-      const outEdges = await this.store.getEdgesFrom(nodeId);
-      const filtered = outEdges.filter((e) => edgeKinds.includes(e.kind));
-      // Sort by line number for execution order
-      filtered.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+      if (depth < maxDepth) {
+        const outEdges = await this.store.getEdgesFrom(nodeId);
+        const filtered = outEdges.filter((e) => edgeKinds.includes(e.kind));
+        // Sort by line number descending — stack reverses order, so we get
+        // ascending execution order when popping
+        filtered.sort((a, b) => (b.line ?? 0) - (a.line ?? 0));
 
-      for (const edge of filtered) {
-        await dfs(edge.target, depth + 1, edge);
+        for (const outEdge of filtered) {
+          stack.push({ nodeId: outEdge.target, depth: depth + 1, edge: outEdge });
+        }
       }
-    };
+    }
 
-    await dfs(startNodeId, 0, null);
     return steps;
   }
 

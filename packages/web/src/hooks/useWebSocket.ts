@@ -11,26 +11,37 @@ export function useWebSocket(url: string): WebSocketState {
   const [lastMessage, setLastMessage] = useState<{ type: string; data?: unknown } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMounted = useRef(true);
 
   const connect = useCallback(() => {
+    // Close any existing socket before reconnecting
+    if (wsRef.current) {
+      wsRef.current.onclose = null; // prevent triggering reconnect
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
     try {
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        if (isMounted.current) setConnected(true);
+      };
 
       ws.onclose = () => {
-        setConnected(false);
-        // Auto-reconnect after 3 seconds
-        reconnectTimer.current = setTimeout(connect, 3000);
+        if (isMounted.current) {
+          setConnected(false);
+          reconnectTimer.current = setTimeout(connect, 3000);
+        }
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          setLastMessage(msg);
+          if (isMounted.current) setLastMessage(msg);
         } catch {
-          // Ignore
+          // Ignore malformed messages
         }
       };
 
@@ -38,16 +49,23 @@ export function useWebSocket(url: string): WebSocketState {
         ws.close();
       };
     } catch {
-      // Server not available
-      reconnectTimer.current = setTimeout(connect, 3000);
+      if (isMounted.current) {
+        reconnectTimer.current = setTimeout(connect, 3000);
+      }
     }
   }, [url]);
 
   useEffect(() => {
+    isMounted.current = true;
     connect();
     return () => {
+      isMounted.current = false;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 

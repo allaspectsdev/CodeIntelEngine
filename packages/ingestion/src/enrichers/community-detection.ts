@@ -92,19 +92,21 @@ export async function detectCommunities(
       let bestCom = currentCom;
       let bestDelta = 0;
 
-      // Remove node from current community for calculation
-      communityWeight[currentCom] -= degree[i];
       const weightToCurrent = comWeights.get(currentCom) ?? 0;
+      // Save original weight of current community (Σ_C) for formula
+      const originalCurrentWeight = communityWeight[currentCom];
 
       for (const [targetCom, weightToTarget] of comWeights) {
         if (targetCom === currentCom) continue;
 
-        // Modularity gain from moving i from currentCom to targetCom
+        // Standard Louvain modularity gain:
+        // ΔQ = (k_{i,D} - k_{i,C})/m - γ * k_i * (Σ_D - Σ_C + k_i) / (2m²)
+        // where Σ_C includes node i, Σ_D does not
         const delta =
           (weightToTarget - weightToCurrent) / totalWeight -
           resolution *
             degree[i] *
-            (communityWeight[targetCom] - communityWeight[currentCom]) /
+            (communityWeight[targetCom] - originalCurrentWeight + degree[i]) /
             (2 * totalWeight * totalWeight);
 
         if (delta > bestDelta) {
@@ -114,7 +116,6 @@ export async function detectCommunities(
       }
 
       // Move to best community
-      communityWeight[currentCom] += degree[i]; // restore
       if (bestCom !== currentCom) {
         communityWeight[currentCom] -= degree[i];
         communityWeight[bestCom] += degree[i];
@@ -124,14 +125,17 @@ export async function detectCommunities(
     }
   }
 
-  // Compact community IDs
+  // Compact community IDs — snapshot originals first to avoid
+  // corruption when a compacted ID collides with another node's original ID
   const communityMap = new Map<number, number>();
   let nextId = 0;
+  const originalCommunities = Array.from(community);
   for (let i = 0; i < community.length; i++) {
-    if (!communityMap.has(community[i])) {
-      communityMap.set(community[i], nextId++);
+    const orig = originalCommunities[i];
+    if (!communityMap.has(orig)) {
+      communityMap.set(orig, nextId++);
     }
-    community[i] = communityMap.get(community[i])!;
+    community[i] = communityMap.get(orig)!;
   }
 
   // Build community objects
@@ -187,8 +191,8 @@ export async function detectCommunities(
   // Update node community assignments
   for (let i = 0; i < nodeIds.length; i++) {
     await store.run(
-      "UPDATE nodes SET community_id = ? WHERE id = ?",
-      { 1: community[i], 2: nodeIds[i] } as unknown as Record<string, unknown>
+      "UPDATE nodes SET community_id = @communityId WHERE id = @id",
+      { communityId: community[i], id: nodeIds[i] }
     );
   }
 

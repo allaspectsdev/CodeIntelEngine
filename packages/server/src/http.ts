@@ -1,4 +1,4 @@
-import express, { type Request, type Response, type Express } from "express";
+import express, { type Request, type Response, type NextFunction, type Express } from "express";
 import cors from "cors";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createServer, type Server as HTTPServer } from "node:http";
@@ -58,52 +58,66 @@ export class HttpServer {
     });
 
     // Execute tool
-    this.app.post("/api/tools/:name", async (req: Request, res: Response) => {
-      const name = String(req.params.name);
-      const args = req.body ?? {};
-
-      const result = await this.registry.execute(name, args as Record<string, unknown>, this.ctx);
-
-      if (result.isError) {
-        res.status(400).json(result);
-      } else {
-        res.json(result);
+    this.app.post("/api/tools/:name", async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const name = String(req.params.name);
+        const args = req.body ?? {};
+        const result = await this.registry.execute(name, args as Record<string, unknown>, this.ctx);
+        if (result.isError) {
+          res.status(400).json(result);
+        } else {
+          res.json(result);
+        }
+      } catch (err) {
+        next(err);
       }
     });
 
     // Graph stats
-    this.app.get("/api/stats", async (_req: Request, res: Response) => {
-      const [nodeCount, edgeCount, communities, processes] = await Promise.all([
-        this.ctx.store.getNodeCount(),
-        this.ctx.store.getEdgeCount(),
-        this.ctx.store.getCommunities(),
-        this.ctx.store.getProcesses(),
-      ]);
+    this.app.get("/api/stats", async (_req: Request, res: Response, next: NextFunction) => {
+      try {
+        const [nodeCount, edgeCount, communities, processes] = await Promise.all([
+          this.ctx.store.getNodeCount(),
+          this.ctx.store.getEdgeCount(),
+          this.ctx.store.getCommunities(),
+          this.ctx.store.getProcesses(),
+        ]);
 
-      res.json({
-        nodes: nodeCount,
-        edges: edgeCount,
-        communities: communities.length,
-        processes: processes.length,
-      });
+        res.json({
+          nodes: nodeCount,
+          edges: edgeCount,
+          communities: communities.length,
+          processes: processes.length,
+        });
+      } catch (err) {
+        next(err);
+      }
     });
 
     // Get node by ID
-    this.app.get("/api/nodes/:id", async (req: Request, res: Response) => {
-      const id = decodeURIComponent(String(req.params.id));
-      const node = await this.ctx.store.getNode(id);
-      if (!node) {
-        res.status(404).json({ error: "Node not found" });
-        return;
+    this.app.get("/api/nodes/:id", async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const id = decodeURIComponent(String(req.params.id));
+        const node = await this.ctx.store.getNode(id);
+        if (!node) {
+          res.status(404).json({ error: "Node not found" });
+          return;
+        }
+        res.json(node);
+      } catch (err) {
+        next(err);
       }
-      res.json(node);
     });
 
     // Get nodes by file
-    this.app.get("/api/files/:path", async (req: Request, res: Response) => {
-      const filePath = decodeURIComponent(String(req.params.path));
-      const nodes = await this.ctx.store.getNodesByFile(filePath);
-      res.json({ nodes });
+    this.app.get("/api/files/:path", async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const filePath = decodeURIComponent(String(req.params.path));
+        const nodes = await this.ctx.store.getNodesByFile(filePath);
+        res.json({ nodes });
+      } catch (err) {
+        next(err);
+      }
     });
 
     // SSE stream for query results
@@ -141,6 +155,12 @@ export class HttpServer {
       res.write("event: done\ndata: {}\n\n");
       res.end();
     });
+
+    // Global error handler
+    this.app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+      console.error("Server error:", err.message);
+      res.status(500).json({ error: "Internal server error" });
+    });
   }
 
   private setupWebSocket(): void {
@@ -162,15 +182,10 @@ export class HttpServer {
         }
       });
 
-      // Send initial status
       ws.send(JSON.stringify({ type: "connected", timestamp: Date.now() }));
     });
   }
 
-  /**
-   * Broadcast a message to all connected WebSocket clients.
-   * Used by the file watcher to push index updates.
-   */
   broadcast(event: { type: string; data: unknown }): void {
     const message = JSON.stringify(event);
     for (const client of this.clients) {

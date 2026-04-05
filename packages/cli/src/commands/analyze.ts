@@ -14,7 +14,13 @@ export const analyzeCommand = new Command("analyze")
   .option("--concurrency <n>", "Number of parallel workers", "4")
   .action(async (path: string, opts: Record<string, unknown>) => {
     const repo = getRepoInfo(path);
-    const store = await createStore(repo);
+    let store;
+    try {
+      store = await createStore(repo);
+    } catch (error) {
+      console.error(chalk.red("Failed to open database:"), error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
 
     const spinner = ora("Analyzing codebase...").start();
     let lastPhase = "";

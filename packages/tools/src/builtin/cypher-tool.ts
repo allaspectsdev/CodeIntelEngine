@@ -40,7 +40,10 @@ export const cypherTool: ToolPlugin = {
     }
 
     // Prevent destructive subqueries
-    const forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH"];
+    const forbidden = [
+      "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+      "ATTACH", "DETACH", "REINDEX", "ANALYZE", "VACUUM", "PRAGMA",
+    ];
     for (const keyword of forbidden) {
       if (normalized.includes(keyword)) {
         return {

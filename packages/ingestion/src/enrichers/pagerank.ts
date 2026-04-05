@@ -84,8 +84,8 @@ export async function computePageRank(
   for (let i = 0; i < N; i++) {
     result.set(nodeIds[i], rank[i]);
     await store.run(
-      "UPDATE nodes SET page_rank = ? WHERE id = ?",
-      { 1: rank[i], 2: nodeIds[i] } as unknown as Record<string, unknown>
+      "UPDATE nodes SET page_rank = @rank WHERE id = @id",
+      { rank: rank[i], id: nodeIds[i] }
     );
   }
 

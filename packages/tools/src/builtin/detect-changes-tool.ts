@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import type { ToolPlugin, ToolContext, ToolResult } from "../types.js";
 
 export const detectChangesTool: ToolPlugin = {
@@ -28,7 +29,7 @@ export const detectChangesTool: ToolPlugin = {
 
     let diffOutput: string;
     try {
-      diffOutput = execSync(`git diff --name-status ${since}`, {
+      diffOutput = execFileSync("git", ["diff", "--name-status", since], {
         cwd: ctx.repo.rootPath,
         encoding: "utf-8",
         timeout: 10_000,
@@ -76,7 +77,7 @@ export const detectChangesTool: ToolPlugin = {
     }> = [];
 
     for (const change of changes) {
-      const fullPath = `${ctx.repo.rootPath}/${change.filePath}`;
+      const fullPath = join(ctx.repo.rootPath, change.filePath);
       const nodes = await ctx.store.getNodesByFile(fullPath);
 
       changedNodes.push({
@@ -97,7 +98,7 @@ export const detectChangesTool: ToolPlugin = {
     if (includeImpact) {
       const allImpacted = new Set<string>();
       for (const change of changedNodes) {
-        const fullPath = `${ctx.repo.rootPath}/${change.file}`;
+        const fullPath = join(ctx.repo.rootPath, change.file);
         const nodes = await ctx.store.getNodesByFile(fullPath);
         for (const node of nodes) {
           const impact = await ctx.query.impact(node.id, { maxDepth: 3 });

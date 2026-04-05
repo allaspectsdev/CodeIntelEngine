@@ -8,7 +8,13 @@ export const watchCommand = new Command("watch")
   .option("--debounce <ms>", "Debounce interval in milliseconds", "500")
   .action(async (opts: Record<string, unknown>) => {
     const repo = getRepoInfo();
-    const store = await createStore(repo);
+    let store;
+    try {
+      store = await createStore(repo);
+    } catch (error) {
+      console.error(chalk.red("Failed to open database:"), error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
 
     const debounceMs = parseInt(opts.debounce as string) || 500;
     const watcher = new FileWatcher(store, repo.rootPath, { debounceMs });

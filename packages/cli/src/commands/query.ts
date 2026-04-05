@@ -12,10 +12,16 @@ export const queryCommand = new Command("query")
   .option("--json", "Output as JSON")
   .action(async (text: string, opts: Record<string, unknown>) => {
     const repo = getRepoInfo();
-    const store = await createStore(repo);
-    const { queryEngine } = createToolContext(store, repo);
+    let store;
+    try {
+      store = await createStore(repo);
+    } catch (error) {
+      console.error(chalk.red("Failed to open database:"), error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
 
     try {
+      const { queryEngine } = createToolContext(store, repo);
       const results = await queryEngine.query(text, {
         limit: parseInt(opts.limit as string) || 20,
         kind: opts.kind as any,

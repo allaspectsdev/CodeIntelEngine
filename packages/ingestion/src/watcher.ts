@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "chokidar";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { GraphStore } from "@codeintel/core";
 import { IngestionPipeline, type PipelineOptions } from "./pipeline.js";
@@ -99,7 +100,7 @@ export class FileWatcher extends EventEmitter {
   }
 
   private handleFileEvent(type: "add" | "change" | "unlink", relativePath: string): void {
-    const fullPath = `${this.projectRoot}/${relativePath}`;
+    const fullPath = join(this.projectRoot, relativePath);
 
     // Clear existing debounce for this file
     const existing = this.pendingFiles.get(fullPath);

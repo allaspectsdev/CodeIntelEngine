@@ -9,6 +9,7 @@ export function App() {
   const [stats, setStats] = useState<GraphStats | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const ws = useWebSocket("ws://localhost:3100");
 
   useEffect(() => {
@@ -32,6 +33,7 @@ export function App() {
   }
 
   const handleSearch = useCallback(async (query: string) => {
+    setSearchError(null);
     try {
       const res = await fetch("/api/tools/query", {
         method: "POST",
@@ -39,14 +41,23 @@ export function App() {
         body: JSON.stringify({ query, limit: 50 }),
       });
       const data = await res.json();
+      if (data.isError) {
+        const textContent = data.content?.find((c: { type: string }) => c.type === "text");
+        setSearchError(textContent?.text ?? "Search failed");
+        setResults([]);
+        return;
+      }
       if (data.content) {
         const jsonContent = data.content.find((c: { type: string }) => c.type === "json");
         if (jsonContent) {
           setResults(jsonContent.data);
+        } else {
+          setResults([]);
         }
       }
     } catch {
-      // Handle error
+      setSearchError("Failed to connect to server");
+      setResults([]);
     }
   }, []);
 
@@ -97,6 +108,19 @@ export function App() {
           {stats && <StatsBar stats={stats} />}
 
           <div style={{ marginTop: "16px" }}>
+            {searchError && (
+              <div style={{
+                padding: "8px 12px",
+                marginBottom: "8px",
+                borderRadius: "6px",
+                background: "#3d1114",
+                border: "1px solid #f8514950",
+                color: "#f85149",
+                fontSize: "12px",
+              }}>
+                {searchError}
+              </div>
+            )}
             <h3 style={{ fontSize: "13px", color: "#8b949e", marginBottom: "8px" }}>
               Results ({results.length})
             </h3>

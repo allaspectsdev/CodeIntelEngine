@@ -242,13 +242,13 @@ export class IngestionPipeline {
     const fileHash = createHash("sha256").update(source).digest("hex");
 
     if (this.opts.incremental) {
-      // Check if any node in this file has the same hash
       const existing = await this.store.query<{ content_hash: string }>(
-        "SELECT content_hash FROM nodes WHERE file_path = ? LIMIT 1",
-        { 1: filePath } as unknown as Record<string, unknown>
+        "SELECT content_hash FROM nodes WHERE file_path = @filePath AND kind = 'file' LIMIT 1",
+        { filePath }
       );
-      // Simple heuristic: if first node hash matches file hash prefix, skip
-      // (Real implementation would hash the full file content separately)
+      if (existing.length > 0 && existing[0].content_hash === fileHash) {
+        return false; // file unchanged, skip re-index
+      }
     }
 
     // Delete existing nodes for this file (cascade deletes edges)

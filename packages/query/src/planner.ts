@@ -75,8 +75,8 @@ export class QueryEngine {
         const communityIds = Array.from(communities).slice(0, 5); // limit communities
         for (const cid of communityIds) {
           const members = await this.store.query<{ id: string }>(
-            "SELECT id FROM nodes WHERE community_id = ? LIMIT 20",
-            { 1: cid } as unknown as Record<string, unknown>
+            "SELECT id FROM nodes WHERE community_id = @communityId LIMIT 20",
+            { communityId: cid }
           );
           for (const m of members) {
             const node = await this.store.getNode(m.id);

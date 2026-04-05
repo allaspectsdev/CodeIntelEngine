@@ -7,7 +7,13 @@ export const statsCommand = new Command("stats")
   .option("--json", "Output as JSON")
   .action(async (opts: Record<string, unknown>) => {
     const repo = getRepoInfo();
-    const store = await createStore(repo);
+    let store;
+    try {
+      store = await createStore(repo);
+    } catch (error) {
+      console.error(chalk.red("Failed to open database:"), error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
 
     try {
       const [nodeCount, edgeCount, communities, processes] = await Promise.all([
@@ -17,7 +23,6 @@ export const statsCommand = new Command("stats")
         store.getProcesses(),
       ]);
 
-      // Get breakdown by kind
       const kindCounts = await store.query<{ kind: string; count: number }>(
         "SELECT kind, count(*) as count FROM nodes GROUP BY kind ORDER BY count DESC"
       );
@@ -26,7 +31,6 @@ export const statsCommand = new Command("stats")
         "SELECT kind, count(*) as count FROM edges GROUP BY kind ORDER BY count DESC"
       );
 
-      // Languages
       const langCounts = await store.query<{ language: string; count: number }>(
         "SELECT language, count(*) as count FROM nodes WHERE kind = 'file' GROUP BY language ORDER BY count DESC"
       );

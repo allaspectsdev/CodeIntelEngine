@@ -52,20 +52,24 @@ export class RankFusion {
     const limit = opts?.limit ?? 50;
     const queryCommunities = opts?.queryCommunities ?? new Set<number>();
 
-    // Build score maps
+    // Build score maps — use actual scores from text search, not re-ranked RRF.
+    // TextSearch already does internal RRF when combining BM25 + vector,
+    // so we use the pre-computed textScore directly.
     const textScores = new Map<string, number>();
     const nodeMap = new Map<string, GraphNode>();
 
-    // RRF scores for text results
-    const k = 60;
-    for (let i = 0; i < textResults.length; i++) {
-      const node = textResults[i];
-      textScores.set(node.id, 1 / (k + i + 1));
+    // Normalize text scores to [0,1] range
+    const maxTextScore = textResults.length > 0
+      ? Math.max(...textResults.map((n) => Math.abs(n.textScore)), 1e-9)
+      : 1;
+    for (const node of textResults) {
+      textScores.set(node.id, Math.abs(node.textScore) / maxTextScore);
       nodeMap.set(node.id, node);
     }
 
-    // Add graph neighbors that aren't in text results
+    // Graph neighbors get RRF-based scores (they have no pre-computed score)
     const graphScores = new Map<string, number>();
+    const k = 60;
     for (let i = 0; i < graphNeighbors.length; i++) {
       const node = graphNeighbors[i];
       graphScores.set(node.id, 1 / (k + i + 1));

@@ -79,7 +79,13 @@ export class GraphStore {
     }
   }
 
-  async transaction<T>(fn: (tx: Transaction) => Promise<T>): Promise<T> {
+  /**
+   * Run a synchronous transaction. The callback receives a Transaction
+   * object with synchronous query/run/mutate methods. better-sqlite3
+   * transactions are inherently synchronous — use mutate() for async
+   * batched writes instead.
+   */
+  async transaction<T>(fn: (tx: Transaction) => T): Promise<T> {
     const db = await this.pool.acquire();
     try {
       let result: T;
@@ -105,19 +111,7 @@ export class GraphStore {
             }
           },
         };
-        // We need to run the async fn synchronously inside the transaction.
-        // Store the promise and resolve outside.
-        // Actually, better-sqlite3 transactions are synchronous, so we use a
-        // sync-compatible wrapper pattern.
-        result = undefined as unknown as T;
-        // For synchronous transaction support, the fn should be sync-compatible
-        const maybePromise = fn(tx);
-        if (maybePromise instanceof Promise) {
-          throw new Error(
-            "Transaction callback must be synchronous. Use mutate() for async operations."
-          );
-        }
-        result = maybePromise as T;
+        result = fn(tx);
       });
       sqliteTx();
       return result!;

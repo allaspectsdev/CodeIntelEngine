@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 
@@ -48,9 +48,9 @@ export const initCommand = new Command("init")
     // Add .codeintel to .gitignore if not already present
     const gitignorePath = join(root, ".gitignore");
     if (existsSync(gitignorePath)) {
-      const content = require("node:fs").readFileSync(gitignorePath, "utf-8");
+      const content = readFileSync(gitignorePath, "utf-8");
       if (!content.includes(".codeintel")) {
-        require("node:fs").appendFileSync(gitignorePath, "\n.codeintel/\n");
+        appendFileSync(gitignorePath, "\n.codeintel/\n");
         console.log(chalk.dim("Added .codeintel/ to .gitignore"));
       }
     }

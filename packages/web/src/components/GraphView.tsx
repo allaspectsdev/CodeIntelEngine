@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import * as d3 from "d3";
 
 interface GraphViewProps {
@@ -91,8 +91,21 @@ export function GraphView({ selectedNode }: GraphViewProps) {
       .catch(() => {});
   }, [selectedNode]);
 
+  // Track active simulation so we can always stop it on cleanup
+  const simulationRef = useRef<d3.Simulation<d3.SimulationNodeDatum, undefined> | null>(null);
+
   useEffect(() => {
-    if (!svgRef.current || graphData.nodes.length === 0) return;
+    // Always stop previous simulation first
+    simulationRef.current?.stop();
+    simulationRef.current = null;
+
+    if (!svgRef.current || graphData.nodes.length === 0) {
+      // Clear SVG when no data
+      if (svgRef.current) {
+        d3.select(svgRef.current).selectAll("*").remove();
+      }
+      return;
+    }
 
     const svg = d3.select(svgRef.current);
     const width = svgRef.current.clientWidth;
@@ -108,7 +121,6 @@ export function GraphView({ selectedNode }: GraphViewProps) {
       .on("zoom", (event) => g.attr("transform", event.transform));
     svg.call(zoom);
 
-    // Force simulation
     const simulation = d3.forceSimulation(graphData.nodes as d3.SimulationNodeDatum[])
       .force("link", d3.forceLink(graphData.links).id((d: any) => d.id).distance(120))
       .force("charge", d3.forceManyBody().strength(-300))
@@ -175,7 +187,11 @@ export function GraphView({ selectedNode }: GraphViewProps) {
 
     node.call(drag as any);
 
-    return () => { simulation.stop(); };
+    simulationRef.current = simulation;
+    return () => {
+      simulation.stop();
+      simulationRef.current = null;
+    };
   }, [graphData, selectedNode]);
 
   if (graphData.nodes.length === 0) {

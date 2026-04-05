@@ -45,7 +45,7 @@ export const flowTool: ToolPlugin = {
       };
     }
 
-    const maxDepth = (args.maxDepth as number) ?? 10;
+    const maxDepth = Math.min((args.maxDepth as number) ?? 10, 50);
     const steps = await ctx.query.traceFlow(nodeId, { maxDepth });
 
     if (steps.length === 0) {

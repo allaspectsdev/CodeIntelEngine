@@ -193,15 +193,18 @@ export class TextSearch {
  * Escapes special characters and wraps terms.
  */
 function sanitizeFtsQuery(query: string): string {
-  // Remove FTS5 special characters that could cause syntax errors
-  const cleaned = query.replace(/[{}()\[\]^~*:"/\\]/g, " ").trim();
+  // Strip all FTS5 special characters including operators (- + AND OR NOT)
+  const cleaned = query.replace(/[{}()\[\]^~*:"/\\+\-]/g, " ").trim();
   if (!cleaned) return "";
 
-  // Split into terms and join with implicit AND
-  const terms = cleaned.split(/\s+/).filter((t) => t.length > 0);
+  // Split into terms, filter out FTS5 keywords
+  const reserved = new Set(["AND", "OR", "NOT", "NEAR"]);
+  const terms = cleaned
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !reserved.has(t.toUpperCase()));
   if (terms.length === 0) return "";
 
-  // For single terms, use prefix matching; for multi-term, use phrase matching
+  // For single terms, use prefix matching; for multi-term, use quoted phrases
   if (terms.length === 1) {
     return `"${terms[0]}"*`;
   }

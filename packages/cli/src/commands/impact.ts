@@ -10,11 +10,17 @@ export const impactCommand = new Command("impact")
   .option("--json", "Output as JSON")
   .action(async (symbol: string, opts: Record<string, unknown>) => {
     const repo = getRepoInfo();
-    const store = await createStore(repo);
-    const { queryEngine } = createToolContext(store, repo);
+    let store;
+    try {
+      store = await createStore(repo);
+    } catch (error) {
+      console.error(chalk.red("Failed to open database:"), error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
 
     try {
-      // Find the symbol first
+      const { queryEngine } = createToolContext(store, repo);
+
       const matches = await queryEngine.findByName(symbol);
       if (matches.length === 0) {
         console.log(chalk.yellow(`Symbol "${symbol}" not found`));
@@ -45,7 +51,6 @@ export const impactCommand = new Command("impact")
         )
       );
 
-      // Group by distance
       const groups = new Map<number, typeof limited>();
       for (const r of limited) {
         if (!groups.has(r.distance)) groups.set(r.distance, []);

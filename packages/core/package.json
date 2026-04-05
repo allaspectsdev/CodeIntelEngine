@@ -1,0 +1,27 @@
+{
+  "name": "@codeintel/core",
+  "version": "0.1.0",
+  "description": "Graph store, schema, connection pool for CodeIntelEngine",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "vitest": "^3.0.0",
+    "typescript": "^5.7.0"
+  }
+}

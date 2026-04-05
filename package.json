@@ -1,0 +1,26 @@
+{
+  "name": "codeintelengine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Next-generation code intelligence platform — deep, queryable knowledge graphs from your repositories",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "clean": "turbo clean",
+    "dev": "turbo dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "@types/node": "^22.0.0"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

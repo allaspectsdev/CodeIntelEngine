@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.turbo/
+.env
+.env.local
+*.db
+*.db-journal
+.codeintel/
+coverage/

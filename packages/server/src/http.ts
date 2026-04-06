@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction, type Express }
 import cors from "cors";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createServer, type Server as HTTPServer } from "node:http";
+import type { Duplex } from "node:stream";
 import type { ToolRegistry, ToolContext } from "@codeintel/tools";
 import type { GraphStore } from "@codeintel/core";
 
@@ -40,7 +41,19 @@ export class HttpServer {
     this.app.use(express.json());
 
     this.httpServer = createServer(this.app);
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    this.wss = new WebSocketServer({ noServer: true });
+
+    // Only upgrade requests on /ws path to WebSocket
+    this.httpServer.on("upgrade", (request, socket: Duplex, head) => {
+      const pathname = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+      if (pathname === "/ws") {
+        this.wss.handleUpgrade(request, socket, head, (ws) => {
+          this.wss.emit("connection", ws, request);
+        });
+      } else {
+        socket.destroy();
+      }
+    });
 
     this.setupRoutes();
     this.setupWebSocket();

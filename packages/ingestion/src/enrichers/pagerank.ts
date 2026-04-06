@@ -79,15 +79,20 @@ export async function computePageRank(
     if (diff < tolerance) break;
   }
 
-  // Write back to DB
+  // Write back to DB in a single transaction (not N individual UPDATEs)
   const result = new Map<string, number>();
   for (let i = 0; i < N; i++) {
     result.set(nodeIds[i], rank[i]);
-    await store.run(
-      "UPDATE nodes SET page_rank = @rank WHERE id = @id",
-      { rank: rank[i], id: nodeIds[i] }
-    );
   }
+
+  await store.transaction((tx) => {
+    for (let i = 0; i < N; i++) {
+      tx.run(
+        "UPDATE nodes SET page_rank = @rank WHERE id = @id",
+        { rank: rank[i], id: nodeIds[i] }
+      );
+    }
+  });
 
   return result;
 }

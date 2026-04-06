@@ -163,14 +163,11 @@ export async function detectCommunities(
     }
   }
 
-  // Update database
-  const mutations: Array<{ op: "upsert_node"; node: { id: string; communityId: number } }> = [];
+  // Update database — batch all writes into a single transaction
   const result: Community[] = [];
 
   for (const [cid, data] of communities) {
     const cohesion = data.totalEdges > 0 ? data.internalEdges / data.totalEdges : 0;
-
-    // Generate a label from the most common file paths in the community
     const label = generateCommunityLabel(data.members);
 
     result.push({
@@ -179,22 +176,26 @@ export async function detectCommunities(
       memberCount: data.members.length,
       cohesion,
     });
-
-    await store.upsertCommunity({
-      id: cid,
-      label,
-      memberCount: data.members.length,
-      cohesion,
-    });
   }
 
-  // Update node community assignments
-  for (let i = 0; i < nodeIds.length; i++) {
-    await store.run(
-      "UPDATE nodes SET community_id = @communityId WHERE id = @id",
-      { communityId: community[i], id: nodeIds[i] }
-    );
-  }
+  await store.transaction((tx) => {
+    // Upsert community records
+    for (const com of result) {
+      tx.run(
+        `INSERT OR REPLACE INTO communities (id, label, member_count, cohesion)
+         VALUES (@id, @label, @memberCount, @cohesion)`,
+        com as unknown as Record<string, unknown>
+      );
+    }
+
+    // Update node community assignments
+    for (let i = 0; i < nodeIds.length; i++) {
+      tx.run(
+        "UPDATE nodes SET community_id = @communityId WHERE id = @id",
+        { communityId: community[i], id: nodeIds[i] }
+      );
+    }
+  });
 
   return result;
 }

@@ -1,9 +1,9 @@
 import type { ToolPlugin, ToolContext, ToolResult } from "../types.js";
 
-export const cypherTool: ToolPlugin = {
-  name: "cypher",
+export const sqlTool: ToolPlugin = {
+  name: "sql",
   description:
-    "Execute a raw SQL query against the graph database. Useful for ad-hoc " +
+    "Execute a raw SQL query against the graph database (SQLite). Useful for ad-hoc " +
     "exploration and custom analysis not covered by other tools.",
   inputSchema: {
     type: "object",

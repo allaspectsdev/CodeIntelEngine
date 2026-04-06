@@ -6,7 +6,7 @@ import type { GraphStore, GraphMutation, GraphNode, GraphEdge } from "@codeintel
 import { RegexParser, type ParserBackend, type ParsedTree } from "./parsers/parser.js";
 import { getSupportedExtensions, getLanguageForFile } from "./parsers/language-config.js";
 import { extractSymbols, type ExtractedSymbol } from "./extractors/symbol-extractor.js";
-import { extractImports } from "./extractors/import-extractor.js";
+import { extractImports, type ExtractedImport } from "./extractors/import-extractor.js";
 import { resolveImports, resolveCallEdges } from "./resolvers/import-resolver.js";
 import { detectCommunities } from "./enrichers/community-detection.js";
 import { detectProcesses } from "./enrichers/process-detection.js";
@@ -57,11 +57,20 @@ const DEFAULT_IGNORE = [
   "**/*.map",
 ];
 
+/** Cached result from Phase 1 for reuse in Phase 2 */
+interface FileParseResult {
+  tree: ParsedTree;
+  symbols: ExtractedSymbol[];
+  imports: ExtractedImport[];
+  nodeIds: string[];
+}
+
 /**
  * Streaming incremental ingestion pipeline.
  *
  * Unlike GitNexus (which builds the entire graph in memory then bulk-loads),
  * this pipeline writes nodes and edges to the DB as they are produced.
+ * Files are processed with bounded concurrency using a work-stealing pool.
  */
 export class IngestionPipeline {
   private store: GraphStore;
@@ -79,7 +88,7 @@ export class IngestionPipeline {
       enrichProcesses: opts?.enrichProcesses ?? true,
       enrichPageRank: opts?.enrichPageRank ?? true,
       ignorePatterns: opts?.ignorePatterns ?? DEFAULT_IGNORE,
-      concurrency: opts?.concurrency ?? 4,
+      concurrency: Math.max(1, opts?.concurrency ?? 4),
       processOptions: opts?.processOptions,
       onProgress: opts?.onProgress,
     };
@@ -112,9 +121,11 @@ export class IngestionPipeline {
       elapsedMs: 0,
     };
 
-    // Phase 1: Parse and extract — streaming writes
-    const fileIndex = new Map<string, string[]>(); // filePath -> nodeIds
-    const symbolIndex = new Map<string, string[]>(); // symbolName -> nodeIds
+    // Phase 1: Parse, extract, and write nodes — with bounded concurrency.
+    // Cache parsed trees + extracted imports for reuse in Phase 2.
+    const fileCache = new Map<string, FileParseResult>();
+    const fileIndex = new Map<string, string[]>();     // filePath -> nodeIds
+    const symbolIndex = new Map<string, string[]>();   // symbolName -> nodeIds
     const allCallSites: Array<{
       callerNodeId: string;
       calleeName: string;
@@ -123,11 +134,12 @@ export class IngestionPipeline {
       filePath: string;
     }> = [];
 
-    for (let i = 0; i < files.length; i++) {
-      const filePath = files[i];
+    let completed = 0;
+    await runWithConcurrency(files, this.opts.concurrency, async (filePath) => {
+      completed++;
       this.opts.onProgress?.({
         phase: "parse",
-        current: i + 1,
+        current: completed,
         total: files.length,
         filePath: relative(projectRoot, filePath),
       });
@@ -135,15 +147,22 @@ export class IngestionPipeline {
       const processed = await this.processFile(filePath, projectRoot);
       if (!processed) {
         result.filesSkipped++;
-        continue;
+        return;
       }
 
       result.filesProcessed++;
       result.nodesCreated += processed.nodes.length;
 
-      // Track for resolution phase
       const nodeIds = processed.nodes.map((n) => n.id);
       fileIndex.set(filePath, nodeIds);
+
+      // Cache the parsed tree and imports for Phase 2
+      fileCache.set(filePath, {
+        tree: processed.tree,
+        symbols: processed.symbols,
+        imports: processed.imports,
+        nodeIds,
+      });
 
       for (const symbol of processed.symbols) {
         const name = symbol.node.name;
@@ -154,33 +173,25 @@ export class IngestionPipeline {
           allCallSites.push({ ...call, filePath });
         }
       }
-    }
+    });
 
-    // Phase 2: Resolve imports and calls
+    // Phase 2: Resolve imports and calls — using cached results, no re-parsing
     this.opts.onProgress?.({
       phase: "resolve",
       current: 0,
-      total: files.length,
+      total: fileCache.size,
     });
 
-    for (const filePath of files) {
-      const source = safeReadFile(filePath);
-      if (!source) continue;
+    for (const [filePath, cached] of fileCache) {
+      if (cached.imports.length === 0 || cached.nodeIds.length === 0) continue;
 
-      const tree = this.parser.parse(source, filePath);
-      if (!tree) continue;
-
-      const imports = extractImports(tree);
-      const nodeIds = fileIndex.get(filePath);
-      if (!nodeIds || nodeIds.length === 0) continue;
-
-      // Use the file-level node or first symbol as the import source
-      const sourceNodeId = nodeIds[0];
-      const resolved = resolveImports(imports, filePath, sourceNodeId, projectRoot, fileIndex);
+      const sourceNodeId = cached.nodeIds[0];
+      const resolved = resolveImports(
+        cached.imports, filePath, sourceNodeId, projectRoot, fileIndex
+      );
 
       const importEdgeMutations: GraphMutation[] = [];
       for (const imp of resolved) {
-        // Only create edges to nodes that exist in our graph
         if (imp.resolvedPath !== null || imp.edge.target.startsWith("external::")) {
           importEdgeMutations.push({ op: "upsert_edge", edge: imp.edge });
           result.edgesCreated++;
@@ -202,6 +213,9 @@ export class IngestionPipeline {
       await this.store.mutate(callMutations);
       result.edgesCreated += callEdges.length;
     }
+
+    // Free the cache — no longer needed
+    fileCache.clear();
 
     // Phase 3: Enrichment
     if (this.opts.enrichPageRank) {
@@ -260,12 +274,18 @@ export class IngestionPipeline {
   }
 
   /**
-   * Process a single file: parse, extract symbols, write to DB.
+   * Process a single file: parse, extract symbols + imports, write nodes to DB.
+   * Returns the parsed tree and imports for reuse in the resolution phase.
    */
   private async processFile(
     filePath: string,
     projectRoot: string
-  ): Promise<{ nodes: GraphNode[]; symbols: ExtractedSymbol[] } | null> {
+  ): Promise<{
+    nodes: GraphNode[];
+    symbols: ExtractedSymbol[];
+    tree: ParsedTree;
+    imports: ExtractedImport[];
+  } | null> {
     const source = safeReadFile(filePath);
     if (!source) return null;
 
@@ -273,7 +293,9 @@ export class IngestionPipeline {
     if (!tree) return null;
 
     const symbols = extractSymbols(tree, filePath);
-    if (symbols.length === 0) return null;
+    const imports = extractImports(tree);
+
+    if (symbols.length === 0 && imports.length === 0) return null;
 
     // Create a file node
     const fileHash = createHash("sha256").update(source).digest("hex");
@@ -316,6 +338,8 @@ export class IngestionPipeline {
     return {
       nodes: [fileNode, ...symbols.map((s) => s.node)],
       symbols,
+      tree,
+      imports,
     };
   }
 }
@@ -326,4 +350,23 @@ function safeReadFile(filePath: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Process items with bounded concurrency (p-limit pattern).
+ * Runs up to `limit` tasks in parallel, starting the next as each completes.
+ */
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  let index = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const i = index++;
+      await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
 }

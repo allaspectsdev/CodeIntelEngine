@@ -10,7 +10,10 @@ export function App() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const ws = useWebSocket("ws://localhost:3100");
+  // Derive WebSocket URL from current page location so it works through
+  // the Vite dev proxy and in production (same host/port as HTTP server)
+  const wsUrl = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+  const ws = useWebSocket(wsUrl);
 
   useEffect(() => {
     fetchStats();

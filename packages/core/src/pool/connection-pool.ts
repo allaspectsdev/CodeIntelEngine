@@ -97,14 +97,22 @@ export class ConnectionPool extends EventEmitter {
 
   private sweepIdle(): void {
     const now = Date.now();
-    let keptOne = false;
+    // Find the freshest idle connection to keep alive
+    let freshestIdle: PooledConnection | null = null;
+    for (const conn of this.connections) {
+      if (!conn.inUse && (freshestIdle === null || conn.lastUsed > freshestIdle.lastUsed)) {
+        freshestIdle = conn;
+      }
+    }
+
     this.connections = this.connections.filter((conn) => {
       if (conn.inUse) return true;
-      if (now - conn.lastUsed > this.opts.idleTimeoutMs && keptOne) {
+      // Always keep the freshest idle connection
+      if (conn === freshestIdle) return true;
+      if (now - conn.lastUsed > this.opts.idleTimeoutMs) {
         conn.db.close();
         return false;
       }
-      keptOne = true;
       return true;
     });
   }

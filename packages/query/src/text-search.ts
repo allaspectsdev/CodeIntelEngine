@@ -204,10 +204,13 @@ function sanitizeFtsQuery(query: string): string {
     .filter((t) => t.length > 0 && !reserved.has(t.toUpperCase()));
   if (terms.length === 0) return "";
 
+  // Escape any residual double quotes inside terms to prevent FTS5 syntax errors
+  const safeTerm = (t: string) => t.replace(/"/g, "");
+
   // For single terms, use prefix matching; for multi-term, use quoted phrases
   if (terms.length === 1) {
-    return `"${terms[0]}"*`;
+    return `"${safeTerm(terms[0])}"*`;
   }
 
-  return terms.map((t) => `"${t}"`).join(" ");
+  return terms.map((t) => `"${safeTerm(t)}"`).join(" ");
 }

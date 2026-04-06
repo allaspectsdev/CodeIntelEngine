@@ -1,4 +1,4 @@
-import type { ToolPlugin, ToolContext, ToolResult, ToolDefinition } from "./types.js";
+import type { ToolPlugin, ToolContext, ToolResult, ToolDefinition, JSONSchema } from "./types.js";
 
 /**
  * Tool plugin registry.
@@ -53,6 +53,12 @@ export class ToolRegistry {
       };
     }
 
+    // Validate required fields and basic types against the input schema
+    const validationError = validateArgs(args, plugin.inputSchema, plugin.name);
+    if (validationError) {
+      return validationError;
+    }
+
     try {
       return await plugin.execute(args, ctx);
     } catch (error) {
@@ -63,4 +69,87 @@ export class ToolRegistry {
       };
     }
   }
+}
+
+/**
+ * Lightweight runtime validation of tool arguments against the input schema.
+ * Checks required fields exist and values match declared types.
+ * Returns a ToolResult error if validation fails, null if valid.
+ */
+function validateArgs(
+  args: Record<string, unknown>,
+  schema: JSONSchema,
+  toolName: string
+): ToolResult | null {
+  if (schema.type !== "object") return null;
+
+  // Check required fields
+  if (schema.required) {
+    for (const field of schema.required) {
+      if (args[field] === undefined || args[field] === null) {
+        return {
+          content: [{ type: "text", text: `Tool "${toolName}": missing required argument "${field}"` }],
+          isError: true,
+        };
+      }
+    }
+  }
+
+  // Check types for provided fields
+  if (schema.properties) {
+    for (const [key, propSchema] of Object.entries(schema.properties)) {
+      const value = args[key];
+      if (value === undefined || value === null) continue;
+
+      const expectedType = propSchema.type;
+      if (!expectedType) continue;
+
+      const actualType = typeof value;
+      let valid = false;
+
+      switch (expectedType) {
+        case "string":
+          valid = actualType === "string";
+          break;
+        case "number":
+        case "integer":
+          valid = actualType === "number" && !Number.isNaN(value);
+          break;
+        case "boolean":
+          valid = actualType === "boolean";
+          break;
+        case "array":
+          valid = Array.isArray(value);
+          break;
+        case "object":
+          valid = actualType === "object" && !Array.isArray(value);
+          break;
+        default:
+          valid = true; // unknown type, skip validation
+      }
+
+      if (!valid) {
+        return {
+          content: [{
+            type: "text",
+            text: `Tool "${toolName}": argument "${key}" must be ${expectedType}, got ${actualType}`,
+          }],
+          isError: true,
+        };
+      }
+
+      // Check enum constraint
+      if (propSchema.enum && !propSchema.enum.includes(value as string)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Tool "${toolName}": argument "${key}" must be one of [${propSchema.enum.join(", ")}], got "${value}"`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  }
+
+  return null;
 }

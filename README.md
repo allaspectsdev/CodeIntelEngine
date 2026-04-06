@@ -144,7 +144,7 @@ Every tool is a self-contained plugin. Use them via CLI, MCP, or HTTP API.
 | **`flow`** | Trace execution chains from entry points | *"What gets called when `handleLogin` fires?"* |
 | **`rename`** | Preview rename impact across the graph | *"Can I safely rename `processOrder` to `submitOrder`?"* |
 | **`detect_changes`** | Map git diffs to graph nodes | *"What symbols changed since last commit?"* |
-| **`cypher`** | Raw SQL queries against the graph DB | *For when you need to go off-road* |
+| **`sql`** | Raw SQL queries against the graph DB | *For when you need to go off-road* |
 
 ### Writing Your Own Tool
 

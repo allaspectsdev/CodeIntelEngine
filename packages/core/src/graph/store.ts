@@ -289,49 +289,69 @@ export class GraphStore {
 
   // ── Graph traversal helpers ─────────────────────────
 
+  /**
+   * Find neighbors of a node using a recursive CTE — single SQL round-trip
+   * instead of N+1 queries per depth level.
+   */
   async getNeighbors(
     nodeId: string,
     opts?: { direction?: "in" | "out" | "both"; kinds?: EdgeKind[]; maxDepth?: number }
   ): Promise<GraphNode[]> {
     const direction = opts?.direction ?? "both";
-    const maxDepth = opts?.maxDepth ?? 1;
-    const visited = new Set<string>();
-    const result: GraphNode[] = [];
-    const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }];
-
-    while (queue.length > 0) {
-      const { id, depth } = queue.shift()!;
-      if (visited.has(id) || depth > maxDepth) continue;
-      visited.add(id);
-
-      if (id !== nodeId) {
-        const node = await this.getNode(id);
-        if (node) result.push(node);
+    const maxDepth = Math.min(opts?.maxDepth ?? 1, 10);
+    const db = await this.pool.acquire();
+    try {
+      // Build the edge traversal clause based on direction
+      let edgeJoin: string;
+      if (direction === "out") {
+        edgeJoin = "JOIN edges e ON e.source = t.node_id";
+      } else if (direction === "in") {
+        edgeJoin = "JOIN edges e ON e.target = t.node_id";
+      } else {
+        edgeJoin = "JOIN edges e ON e.source = t.node_id OR e.target = t.node_id";
       }
 
-      if (depth < maxDepth) {
-        if (direction === "out" || direction === "both") {
-          const outEdges = await this.getEdgesFrom(id);
-          const filtered = opts?.kinds
-            ? outEdges.filter((e) => opts.kinds!.includes(e.kind))
-            : outEdges;
-          for (const e of filtered) {
-            queue.push({ id: e.target, depth: depth + 1 });
-          }
-        }
-        if (direction === "in" || direction === "both") {
-          const inEdges = await this.getEdgesTo(id);
-          const filtered = opts?.kinds
-            ? inEdges.filter((e) => opts.kinds!.includes(e.kind))
-            : inEdges;
-          for (const e of filtered) {
-            queue.push({ id: e.source, depth: depth + 1 });
-          }
-        }
+      // Build kind filter
+      let kindFilter = "";
+      if (opts?.kinds && opts.kinds.length > 0) {
+        const kindList = opts.kinds.map((k) => `'${k}'`).join(",");
+        kindFilter = `AND e.kind IN (${kindList})`;
       }
+
+      // Next-node expression depends on direction
+      let nextNode: string;
+      if (direction === "out") {
+        nextNode = "e.target";
+      } else if (direction === "in") {
+        nextNode = "e.source";
+      } else {
+        nextNode = "CASE WHEN e.source = t.node_id THEN e.target ELSE e.source END";
+      }
+
+      const sql = `
+        WITH RECURSIVE traverse(node_id, depth) AS (
+          SELECT @startId, 0
+          UNION
+          SELECT ${nextNode}, t.depth + 1
+          FROM traverse t
+          ${edgeJoin} ${kindFilter}
+          WHERE t.depth < @maxDepth
+        )
+        SELECT DISTINCT n.*
+        FROM traverse tr
+        JOIN nodes n ON n.id = tr.node_id
+        WHERE tr.node_id != @startId
+      `;
+
+      const rows = db.prepare(sql).all({
+        startId: nodeId,
+        maxDepth,
+      }) as NodeRow[];
+
+      return rows.map((r) => this.rowToNode(r)!);
+    } finally {
+      this.pool.release(db);
     }
-
-    return result;
   }
 
   // ── Lifecycle ───────────────────────────────────────

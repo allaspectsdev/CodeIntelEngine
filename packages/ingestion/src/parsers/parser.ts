@@ -135,19 +135,18 @@ export class RegexParser implements ParserBackend {
         const bodyText = source.substring(startOffset, bodyEnd);
         const endLineNum = lineNum + bodyText.split("\n").length - 1;
 
-        const symbolNode = makePseudoNode(
-          pattern.type, bodyText, match[1] ?? match[0], lineNum, endLineNum
-        );
+        const symbolName = match[1] ?? match[0];
+        // Create an identifier child for the name, so extractName can find it
+        const nameNode = makePseudoNode("identifier", symbolName, symbolName, lineNum, lineNum);
 
         // Phase 2: Extract call expressions inside this symbol's body
         const callChildren = this.extractCallNodes(bodyText, lineNum, language.id);
-        if (callChildren.length > 0) {
-          symbolNode.children = callChildren;
-          symbolNode.namedChildren = callChildren;
-          for (const child of callChildren) {
-            (child as { parent: SyntaxNode | null }).parent = symbolNode;
-          }
-        }
+
+        // Build children: name identifier first, then call expressions
+        const allChildren = [nameNode, ...callChildren];
+        const symbolNode = makePseudoNode(
+          pattern.type, bodyText, symbolName, lineNum, endLineNum, allChildren
+        );
 
         children.push(symbolNode);
         symbolNodes.push({ node: symbolNode, startOffset, endOffset: bodyEnd });
@@ -186,18 +185,22 @@ export class RegexParser implements ParserBackend {
       let match: RegExpExecArray | null;
       while ((match = regex.exec(bodyText)) !== null) {
         const callText = match[0];
-        const calleeFull = match[1]; // the full callee expression (e.g., "foo" or "obj.method")
+        const calleeFull = match[1];
         if (!calleeFull) continue;
+
+        // Skip control flow keywords that look like function calls
+        const lastSegment = calleeFull.includes(".")
+          ? calleeFull.substring(calleeFull.lastIndexOf(".") + 1)
+          : calleeFull;
+        if (KEYWORD_EXCLUSIONS.has(lastSegment)) continue;
 
         const lineOffset = bodyText.substring(0, match.index).split("\n").length - 1;
         const callLine = baseLineNum + lineOffset;
 
-        // Build the callee child node — distinguish qualified (a.b) from simple (a)
         const dotIndex = calleeFull.lastIndexOf(".");
         let calleeNode: SyntaxNode;
 
         if (dotIndex > 0) {
-          // Qualified call: obj.method(...)
           const objText = calleeFull.substring(0, dotIndex);
           const propText = calleeFull.substring(dotIndex + 1);
           const objNode = makePseudoNode("identifier", objText, objText, callLine, callLine);
@@ -206,7 +209,6 @@ export class RegexParser implements ParserBackend {
             "member_expression", calleeFull, calleeFull, callLine, callLine, [objNode, propNode]
           );
         } else {
-          // Simple call: func(...)
           calleeNode = makePseudoNode("identifier", calleeFull, calleeFull, callLine, callLine);
         }
 
@@ -221,11 +223,16 @@ export class RegexParser implements ParserBackend {
   }
 
   /**
-   * Estimate the end of a function/class body by counting braces or indentation.
+   * Estimate the end of a function/class body.
+   *
+   * For brace-based languages: scans for matching braces while skipping
+   * braces inside string literals (single, double, template/backtick),
+   * line comments (//), and block comments.
+   *
+   * For Python: uses indentation tracking.
    */
   private findBodyEnd(source: string, startOffset: number, langId: string): number {
     if (langId === "python") {
-      // Python: find the next line at the same or lower indentation level
       const lineStart = source.lastIndexOf("\n", startOffset) + 1;
       const firstLine = source.substring(lineStart, source.indexOf("\n", startOffset));
       const baseIndent = firstLine.match(/^(\s*)/)?.[1].length ?? 0;
@@ -245,21 +252,45 @@ export class RegexParser implements ParserBackend {
       return source.length;
     }
 
-    // Brace-based languages: count matching braces
+    // Brace-based languages: string-aware brace matching
     const braceStart = source.indexOf("{", startOffset);
     if (braceStart === -1) {
-      // No braces — return to end of line (e.g., variable declaration)
       const eol = source.indexOf("\n", startOffset);
       return eol === -1 ? source.length : eol;
     }
 
     let depth = 0;
-    for (let i = braceStart; i < source.length; i++) {
-      if (source[i] === "{") depth++;
-      else if (source[i] === "}") {
+    let i = braceStart;
+    while (i < source.length) {
+      const ch = source[i];
+
+      // Skip single-line comments
+      if (ch === "/" && source[i + 1] === "/") {
+        const eol = source.indexOf("\n", i);
+        i = eol === -1 ? source.length : eol + 1;
+        continue;
+      }
+
+      // Skip block comments
+      if (ch === "/" && source[i + 1] === "*") {
+        const end = source.indexOf("*/", i + 2);
+        i = end === -1 ? source.length : end + 2;
+        continue;
+      }
+
+      // Skip string literals (single quote, double quote, backtick)
+      if (ch === "'" || ch === '"' || ch === "`") {
+        i = skipStringLiteral(source, i, ch);
+        continue;
+      }
+
+      if (ch === "{") depth++;
+      else if (ch === "}") {
         depth--;
         if (depth === 0) return i + 1;
       }
+
+      i++;
     }
     return source.length;
   }
@@ -357,6 +388,67 @@ export class RegexParser implements ParserBackend {
         return [];
     }
   }
+}
+
+/** Keywords that look like function calls but aren't. */
+const KEYWORD_EXCLUSIONS = new Set([
+  "if", "else", "for", "while", "do", "switch", "case", "return",
+  "catch", "throw", "typeof", "instanceof", "new", "delete", "void",
+  "await", "yield", "in", "of", "with", "finally", "try",
+  // Python
+  "print", "elif", "except", "lambda", "assert", "pass", "raise",
+  // Go
+  "range", "select", "defer", "go",
+  // Rust
+  "match", "loop", "let", "mut", "ref", "move",
+  // Java
+  "synchronized", "extends", "implements",
+]);
+
+/**
+ * Skip past a string literal starting at position `start`.
+ * Handles escape sequences (\' \" \\) and template literals with nested ${}.
+ */
+function skipStringLiteral(source: string, start: number, quote: string): number {
+  let i = start + 1;
+  if (quote === "`") {
+    // Template literal: handle nested ${} expressions
+    while (i < source.length) {
+      if (source[i] === "\\" && i + 1 < source.length) {
+        i += 2; // skip escape
+      } else if (source[i] === "$" && source[i + 1] === "{") {
+        // Skip the nested expression by counting braces
+        i += 2;
+        let braceDepth = 1;
+        while (i < source.length && braceDepth > 0) {
+          if (source[i] === "{") braceDepth++;
+          else if (source[i] === "}") braceDepth--;
+          else if (source[i] === "`") i = skipStringLiteral(source, i, "`");
+          else if (source[i] === "'" || source[i] === '"') i = skipStringLiteral(source, i, source[i]);
+          else i++;
+        }
+      } else if (source[i] === "`") {
+        return i + 1;
+      } else {
+        i++;
+      }
+    }
+    return i;
+  }
+
+  // Single or double quoted string
+  while (i < source.length) {
+    if (source[i] === "\\" && i + 1 < source.length) {
+      i += 2; // skip escape
+    } else if (source[i] === quote) {
+      return i + 1;
+    } else if (source[i] === "\n" && quote !== "`") {
+      return i; // unterminated string, bail at newline
+    } else {
+      i++;
+    }
+  }
+  return i;
 }
 
 /**

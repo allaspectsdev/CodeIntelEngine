@@ -122,10 +122,42 @@ export class IngestionPipeline {
     };
 
     // Phase 1: Parse, extract, and write nodes — with bounded concurrency.
-    // Cache parsed trees + extracted imports for reuse in Phase 2.
+    // Each worker collects results locally; we merge after all workers finish
+    // to avoid races on shared mutable state.
+    interface WorkerResult {
+      filePath: string;
+      parsed: NonNullable<Awaited<ReturnType<IngestionPipeline["processFile"]>>>;
+    }
+
+    const workerResults: WorkerResult[][] = [];
+    let skipCount = 0;
+    let progressCounter = 0;
+
+    await runWithConcurrency(files, this.opts.concurrency, async (filePath, workerIndex) => {
+      // Progress: read-then-increment is safe because we only use it for
+      // display, and the worst case is a duplicated or skipped number
+      const current = ++progressCounter;
+      this.opts.onProgress?.({
+        phase: "parse",
+        current,
+        total: files.length,
+        filePath: relative(projectRoot, filePath),
+      });
+
+      const processed = await this.processFile(filePath, projectRoot);
+      if (!processed) {
+        skipCount++;
+        return;
+      }
+
+      if (!workerResults[workerIndex]) workerResults[workerIndex] = [];
+      workerResults[workerIndex].push({ filePath, parsed: processed });
+    });
+
+    // Merge worker results into shared indexes (single-threaded, no races)
     const fileCache = new Map<string, FileParseResult>();
-    const fileIndex = new Map<string, string[]>();     // filePath -> nodeIds
-    const symbolIndex = new Map<string, string[]>();   // symbolName -> nodeIds
+    const fileIndex = new Map<string, string[]>();
+    const symbolIndex = new Map<string, string[]>();
     const allCallSites: Array<{
       callerNodeId: string;
       calleeName: string;
@@ -134,46 +166,33 @@ export class IngestionPipeline {
       filePath: string;
     }> = [];
 
-    let completed = 0;
-    await runWithConcurrency(files, this.opts.concurrency, async (filePath) => {
-      completed++;
-      this.opts.onProgress?.({
-        phase: "parse",
-        current: completed,
-        total: files.length,
-        filePath: relative(projectRoot, filePath),
-      });
+    for (const batch of workerResults) {
+      if (!batch) continue;
+      for (const { filePath, parsed } of batch) {
+        result.filesProcessed++;
+        result.nodesCreated += parsed.nodes.length;
 
-      const processed = await this.processFile(filePath, projectRoot);
-      if (!processed) {
-        result.filesSkipped++;
-        return;
-      }
+        const nodeIds = parsed.nodes.map((n) => n.id);
+        fileIndex.set(filePath, nodeIds);
+        fileCache.set(filePath, {
+          tree: parsed.tree,
+          symbols: parsed.symbols,
+          imports: parsed.imports,
+          nodeIds,
+        });
 
-      result.filesProcessed++;
-      result.nodesCreated += processed.nodes.length;
+        for (const symbol of parsed.symbols) {
+          const name = symbol.node.name;
+          if (!symbolIndex.has(name)) symbolIndex.set(name, []);
+          symbolIndex.get(name)!.push(symbol.node.id);
 
-      const nodeIds = processed.nodes.map((n) => n.id);
-      fileIndex.set(filePath, nodeIds);
-
-      // Cache the parsed tree and imports for Phase 2
-      fileCache.set(filePath, {
-        tree: processed.tree,
-        symbols: processed.symbols,
-        imports: processed.imports,
-        nodeIds,
-      });
-
-      for (const symbol of processed.symbols) {
-        const name = symbol.node.name;
-        if (!symbolIndex.has(name)) symbolIndex.set(name, []);
-        symbolIndex.get(name)!.push(symbol.node.id);
-
-        for (const call of symbol.callSites) {
-          allCallSites.push({ ...call, filePath });
+          for (const call of symbol.callSites) {
+            allCallSites.push({ ...call, filePath });
+          }
         }
       }
-    });
+    }
+    result.filesSkipped = skipCount;
 
     // Phase 2: Resolve imports and calls — using cached results, no re-parsing
     this.opts.onProgress?.({
@@ -354,18 +373,20 @@ function safeReadFile(filePath: string): string | null {
 
 /**
  * Process items with bounded concurrency (p-limit pattern).
- * Runs up to `limit` tasks in parallel, starting the next as each completes.
+ * Runs up to `limit` workers in parallel, each pulling from a shared queue.
+ * The worker index is passed to fn so callers can collect per-worker results.
  */
 async function runWithConcurrency<T>(
   items: T[],
   limit: number,
-  fn: (item: T) => Promise<void>
+  fn: (item: T, workerIndex: number) => Promise<void>
 ): Promise<void> {
   let index = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async (_, workerIndex) => {
     while (index < items.length) {
       const i = index++;
-      await fn(items[i]);
+      await fn(items[i], workerIndex);
     }
   });
   await Promise.all(workers);

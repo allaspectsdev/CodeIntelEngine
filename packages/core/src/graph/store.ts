@@ -311,11 +311,16 @@ export class GraphStore {
         edgeJoin = "JOIN edges e ON e.source = t.node_id OR e.target = t.node_id";
       }
 
-      // Build kind filter
+      // Build kind filter using parameterized placeholders.
+      // SQLite doesn't support array params, so we generate @kind0, @kind1, etc.
       let kindFilter = "";
+      const kindParams: Record<string, string> = {};
       if (opts?.kinds && opts.kinds.length > 0) {
-        const kindList = opts.kinds.map((k) => `'${k}'`).join(",");
-        kindFilter = `AND e.kind IN (${kindList})`;
+        const placeholders = opts.kinds.map((k, i) => {
+          kindParams[`kind${i}`] = k;
+          return `@kind${i}`;
+        });
+        kindFilter = `AND e.kind IN (${placeholders.join(",")})`;
       }
 
       // Next-node expression depends on direction
@@ -346,6 +351,7 @@ export class GraphStore {
       const rows = db.prepare(sql).all({
         startId: nodeId,
         maxDepth,
+        ...kindParams,
       }) as NodeRow[];
 
       return rows.map((r) => this.rowToNode(r)!);
